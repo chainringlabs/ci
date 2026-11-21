@@ -12,6 +12,7 @@ workflow that lives in a private one.
 |---|---|---|
 | `ghcr-retention.yml` | Prunes the calling repository's GHCR package: keeps `latest` and the 5 most recent tagged versions, deletes untagged manifests. | `packages: write` |
 | `docker-publish.yml` | Builds the calling repository's image (`linux/amd64`). On pull requests it only builds. Otherwise it pushes to `ghcr.io/<owner>/<repo>` (`latest` on the default branch, semver on `v*` tags, `sha-<short sha>`), signs with cosign keyless, and attaches an SPDX SBOM and build provenance. | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `artifact-metadata: write` |
+| `supply-chain.yml` | Scans the calling repository's locked dependencies, choosing steps by the lockfiles it finds (`package-lock.json`, `Cargo.lock`, `uv.lock`). Socket on every event. On pull requests, OSV fails only on vulnerabilities the pull request introduces. On every other event (push, schedule, manual), OSV fails on any known vulnerability and `cargo audit` / `pip-audit` also run. npm installs run without scripts and package signatures are verified. Ignore lists stay in the calling repository. | `contents: read`; pass `SOCKET_SECURITY_API_KEY` (optional) |
 
 ## Calling a workflow
 

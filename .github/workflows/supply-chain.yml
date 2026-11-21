@@ -1,0 +1,300 @@
+# Reusable: supply-chain scan of the calling repository's locked dependencies.
+#
+# What runs depends on which lockfiles exist (package-lock.json, Cargo.lock,
+# uv.lock) in the directories given as inputs, and on the event:
+#
+#   pull_request     OSV in DIFF mode: fail only on vulnerabilities the pull
+#                    request introduces. An advisory against a dependency
+#                    already on the base branch does not block unrelated work.
+#   anything else    OSV in ABSOLUTE mode plus the language auditor (cargo
+#                    audit, pip-audit): fail on any known vulnerability. Call
+#                    this on pushes to main and on a weekly schedule, which is
+#                    where advisories against merged dependencies surface.
+#
+# Socket runs on every event when its key is present. Ignore lists stay in the
+# calling repository (osv-scanner.toml beside each lockfile, .cargo/audit.toml,
+# deny.toml).
+#
+# The calling job must grant `contents: read`. Pass the Socket key with
+# `secrets: inherit` or by name.
+name: Supply chain scan
+
+on:
+  workflow_call:
+    inputs:
+      npm-dir:
+        description: Directory holding package-lock.json.
+        type: string
+        default: .
+      cargo-dir:
+        description: Directory holding Cargo.lock.
+        type: string
+        default: .
+      python-dir:
+        description: Directory holding uv.lock.
+        type: string
+        default: .
+      node-version:
+        description: Node version for the npm install and signature check.
+        type: string
+        default: "26"
+      python-version:
+        description: Python version for the uv export that feeds pip-audit.
+        type: string
+        default: "3.14"
+      cargo-deny:
+        description: >-
+          Use cargo-deny in place of cargo audit (needs deny.toml). Licences,
+          bans and sources are checked on every event; advisories only outside
+          pull requests.
+        type: boolean
+        default: false
+      socket-dir:
+        description: Directory Socket scans.
+        type: string
+        default: .
+      socket-advisory:
+        description: Let the job pass when the Socket scan fails.
+        type: boolean
+        default: false
+    secrets:
+      # Optional: bot-authored pull requests run without secrets, and a
+      # required secret would fail the call before the job starts.
+      SOCKET_SECURITY_API_KEY:
+        required: false
+
+permissions: {}
+
+jobs:
+  scan:
+    name: Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Job-level so the Socket step's `if:` can test for the secret.
+    env:
+      SOCKET_SECURITY_API_KEY: ${{ secrets.SOCKET_SECURITY_API_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Find lockfiles
+        id: detect
+        env:
+          NPM_DIR: ${{ inputs.npm-dir }}
+          CARGO_DIR: ${{ inputs.cargo-dir }}
+          PYTHON_DIR: ${{ inputs.python-dir }}
+          SOCKET_DIR: ${{ inputs.socket-dir }}
+        run: |
+          set -euo pipefail
+          for dir in "$NPM_DIR" "$CARGO_DIR" "$PYTHON_DIR" "$SOCKET_DIR"; do
+            case "$dir" in
+              /* | *..* | "") echo "::error::directory inputs must be relative paths inside the repository: '$dir'"; exit 1 ;;
+            esac
+          done
+          lock() { # lock <dir> <file> -> repository-relative path, or nothing
+            local path="$2"
+            [ "$1" = "." ] || path="${1%/}/$2"
+            if [ -f "$path" ]; then echo "$path"; fi
+          }
+          npm_lock=$(lock "$NPM_DIR" package-lock.json)
+          cargo_lock=$(lock "$CARGO_DIR" Cargo.lock)
+          uv_lock=$(lock "$PYTHON_DIR" uv.lock)
+          : > .osv-lockfiles
+          for path in "$npm_lock" "$cargo_lock" "$uv_lock"; do
+            if [ -n "$path" ]; then echo "$path" >> .osv-lockfiles; fi
+          done
+          if [ ! -s .osv-lockfiles ]; then
+            echo "::error::no package-lock.json, Cargo.lock or uv.lock found; nothing to scan."
+            exit 1
+          fi
+          echo "Lockfiles:"; cat .osv-lockfiles
+          {
+            echo "npm_lock=$npm_lock"
+            echo "cargo_lock=$cargo_lock"
+            echo "uv_lock=$uv_lock"
+            echo "osv_args<<OSV_EOF"
+            sed 's/^/--lockfile=/' .osv-lockfiles
+            echo "OSV_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # --- npm ---------------------------------------------------------------
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ steps.detect.outputs.npm_lock != '' }}
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ steps.detect.outputs.npm_lock }}
+
+      - name: Install npm deps (no scripts)
+        if: ${{ steps.detect.outputs.npm_lock != '' }}
+        working-directory: ${{ inputs.npm-dir }}
+        run: npm ci --ignore-scripts
+
+      - name: Verify npm package signatures
+        if: ${{ steps.detect.outputs.npm_lock != '' }}
+        working-directory: ${{ inputs.npm-dir }}
+        run: npm audit signatures
+
+      # --- Socket ------------------------------------------------------------
+      - name: Socket Security scan
+        if: ${{ env.SOCKET_SECURITY_API_KEY != '' }}
+        continue-on-error: ${{ inputs.socket-advisory }}
+        env:
+          SOCKET_DIR: ${{ inputs.socket-dir }}
+        # Exact pin: `@latest` would run unreviewed code in a step that holds
+        # the key. Renovate bumps it (custom manager in renovate.json).
+        run: |
+          repo_slug="${GITHUB_REPOSITORY##*/}"
+          branch_name="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          npx -y @socketsecurity/cli@1.1.102 scan create \
+            --org grecolabs \
+            --repo "${repo_slug}" \
+            --branch "${branch_name}" \
+            --report \
+            "./${SOCKET_DIR}"
+
+      # --- OSV, pull requests: diff mode -------------------------------------
+      # Scan the base branch's lockfiles and this pull request's, then fail
+      # only on what the pull request adds. The base copies live under
+      # .osv-base/ with their directory layout, so each keeps its sibling
+      # osv-scanner.toml; lockfiles are listed explicitly so a scan never
+      # picks the copies up by recursion. Both scans run with
+      # continue-on-error and the reporter decides; a scan that wrote no JSON
+      # fails the "both scans completed" step instead of passing as clean.
+      - name: Fetch base-branch lockfiles (PR diff mode)
+        id: base
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.extraheader=AUTHORIZATION: basic ${auth}" \
+            fetch --no-tags --depth=1 origin "${BASE_REF}"
+          : > .osv-base-lockfiles
+          while IFS= read -r path; do
+            mkdir -p ".osv-base/$(dirname "$path")"
+            if git show "FETCH_HEAD:${path}" > ".osv-base/${path}" 2>/dev/null; then
+              echo ".osv-base/${path}" >> .osv-base-lockfiles
+            else
+              rm -f ".osv-base/${path}" # new in this pull request
+            fi
+            toml="$(dirname "$path")/osv-scanner.toml"
+            toml="${toml#./}"
+            git show "FETCH_HEAD:${toml}" > ".osv-base/${toml}" 2>/dev/null || rm -f ".osv-base/${toml}"
+          done < .osv-lockfiles
+          if [ -s .osv-base-lockfiles ]; then
+            echo "has_base=true" >> "$GITHUB_OUTPUT"
+          else
+            # No lockfile on the base branch: everything found is new.
+            echo '{"results":[]}' > osv-old.json
+            echo "has_base=false" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "osv_args<<OSV_EOF"
+            sed 's/^/--lockfile=/' .osv-base-lockfiles
+            echo "OSV_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: OSV scan base lockfiles (PR diff mode)
+        id: scan-old
+        if: ${{ github.event_name == 'pull_request' && steps.base.outputs.has_base == 'true' }}
+        uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --format=json
+            --output-file=osv-old.json
+            ${{ steps.base.outputs.osv_args }}
+
+      - name: OSV scan PR lockfiles (PR diff mode)
+        id: scan-new
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --format=json
+            --output-file=osv-new.json
+            ${{ steps.detect.outputs.osv_args }}
+
+      - name: Check that both scans completed (PR diff mode)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          status=0
+          if [ ! -s osv-old.json ]; then
+            echo "::error::OSV-Scanner failed on the base lockfiles without writing results."
+            status=1
+          fi
+          if [ ! -s osv-new.json ]; then
+            echo "::error::OSV-Scanner failed on this pull request's lockfiles without writing results."
+            status=1
+          fi
+          exit "${status}"
+
+      - name: Report vulnerabilities introduced by this PR
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: google/osv-scanner-action/osv-reporter-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
+        with:
+          scan-args: |-
+            --output=osv-results.sarif
+            --old=osv-old.json
+            --new=osv-new.json
+            --gh-annotations=true
+            --fail-on-vuln=true
+
+      # --- OSV, everything else: absolute mode -------------------------------
+      - name: OSV scan (absolute)
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
+        with:
+          scan-args: |-
+            ${{ steps.detect.outputs.osv_args }}
+
+      # --- Rust --------------------------------------------------------------
+      # cargo audit is a second reader of Cargo.lock, on absolute runs only:
+      # OSV diff mode already covers pull requests against the same advisories.
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        if: ${{ steps.detect.outputs.cargo_lock != '' && !inputs.cargo-deny && github.event_name != 'pull_request' }}
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        if: ${{ steps.detect.outputs.cargo_lock != '' && !inputs.cargo-deny && github.event_name != 'pull_request' }}
+        working-directory: ${{ inputs.cargo-dir }}
+        run: cargo audit
+
+      # Advisories are left out on pull requests, where OSV diff mode covers them.
+      - name: cargo-deny
+        if: ${{ steps.detect.outputs.cargo_lock != '' && inputs.cargo-deny }}
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: ${{ inputs.cargo-dir }}/Cargo.toml
+          command: check ${{ github.event_name != 'pull_request' && 'advisories ' || '' }}licenses bans sources
+
+      # --- Python ------------------------------------------------------------
+      # pip-audit on absolute runs only, for the same reason as cargo audit.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: ${{ steps.detect.outputs.uv_lock != '' && github.event_name != 'pull_request' }}
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ steps.detect.outputs.uv_lock }}
+
+      - name: Export locked dependencies to requirements.txt
+        if: ${{ steps.detect.outputs.uv_lock != '' && github.event_name != 'pull_request' }}
+        working-directory: ${{ inputs.python-dir }}
+        env:
+          PYTHON_VERSION: ${{ inputs.python-version }}
+        # --no-emit-project: audit third-party dependencies only.
+        run: |
+          uv python install "$PYTHON_VERSION"
+          uv export --frozen --no-hashes --no-emit-project --output-file requirements-lock.txt
+
+      - name: pip-audit
+        if: ${{ steps.detect.outputs.uv_lock != '' && github.event_name != 'pull_request' }}
+        uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
+        with:
+          inputs: ${{ inputs.python-dir }}/requirements-lock.txt
