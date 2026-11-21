@@ -137,6 +137,23 @@ jobs:
         working-directory: ${{ inputs.npm-dir }}
         run: npm audit signatures
 
+      # --- Python ------------------------------------------------------------
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: ${{ steps.detect.outputs.uv_lock != '' }}
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ steps.detect.outputs.uv_lock }}
+
+      - name: Export locked dependencies to requirements.txt
+        if: ${{ steps.detect.outputs.uv_lock != '' }}
+        working-directory: ${{ inputs.python-dir }}
+        env:
+          PYTHON_VERSION: ${{ inputs.python-version }}
+        # Read by Socket and pip-audit; --no-emit-project omits the project.
+        run: |
+          uv python install "$PYTHON_VERSION"
+          uv export --frozen --no-hashes --no-emit-project --output-file requirements-lock.txt
+
       # --- Socket ------------------------------------------------------------
       - name: Socket Security scan
         if: ${{ env.SOCKET_SECURITY_API_KEY != '' }}
@@ -153,7 +170,7 @@ jobs:
             --repo "${repo_slug}" \
             --branch "${branch_name}" \
             --report \
-            "./${SOCKET_DIR}"
+            "${SOCKET_DIR}"
 
       # --- OSV, pull requests: diff mode -------------------------------------
       # Scan the base branch's lockfiles and this pull request's, then fail
@@ -275,24 +292,7 @@ jobs:
           manifest-path: ${{ inputs.cargo-dir }}/Cargo.toml
           command: check ${{ github.event_name != 'pull_request' && 'advisories ' || '' }}licenses bans sources
 
-      # --- Python ------------------------------------------------------------
       # pip-audit on absolute runs only, for the same reason as cargo audit.
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        if: ${{ steps.detect.outputs.uv_lock != '' && github.event_name != 'pull_request' }}
-        with:
-          enable-cache: true
-          cache-dependency-glob: ${{ steps.detect.outputs.uv_lock }}
-
-      - name: Export locked dependencies to requirements.txt
-        if: ${{ steps.detect.outputs.uv_lock != '' && github.event_name != 'pull_request' }}
-        working-directory: ${{ inputs.python-dir }}
-        env:
-          PYTHON_VERSION: ${{ inputs.python-version }}
-        # --no-emit-project: audit third-party dependencies only.
-        run: |
-          uv python install "$PYTHON_VERSION"
-          uv export --frozen --no-hashes --no-emit-project --output-file requirements-lock.txt
-
       - name: pip-audit
         if: ${{ steps.detect.outputs.uv_lock != '' && github.event_name != 'pull_request' }}
         uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
