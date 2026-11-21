@@ -112,8 +112,8 @@ jobs:
           sbom-path: sbom.spdx.json
           push-to-registry: true
           # The image's storage record is created by the provenance step
-          # below. GitHub only links a record to an artifact that already has
-          # build provenance, so asking for one here fails with a warning.
+          # below. Asking for one here, before provenance exists, fails with a
+          # "no artifacts found" warning on every publish.
           create-storage-record: false
 
       - name: Attest build provenance
