@@ -111,6 +111,10 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           sbom-path: sbom.spdx.json
           push-to-registry: true
+          # The image's storage record is created by the provenance step
+          # below. Asking for one here, before provenance exists, fails with a
+          # "no artifacts found" warning on every publish.
+          create-storage-record: false
 
       - name: Attest build provenance
         if: github.event_name != 'pull_request' && !github.event.repository.private
