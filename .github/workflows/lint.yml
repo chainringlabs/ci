@@ -29,6 +29,8 @@ jobs:
       # Security review of the workflows (injection, excess permissions,
       # unpinned actions, credential persistence).
       - name: zizmor
+        # Runs even when actionlint failed, so one push shows both reports.
+        if: ${{ !cancelled() }}
         uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
           version: 1.32.0

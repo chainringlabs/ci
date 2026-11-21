@@ -6,4 +6,3 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: echo "${{ github.event.pull_request.title }}"
-      - run: echo ${{ steps.nope.outputs.x }}
