@@ -38,6 +38,45 @@ jobs:
 The check a caller reports is named `<caller job> / <reusable job>`, for
 example `prune / Prune old GHCR versions`.
 
+## Verifying a published image
+
+Images published through `docker-publish.yml` are signed by that workflow,
+not by the application repository. The signing certificate carries two
+separate facts, and a verification must check both:
+
+- **Signer**: `https://github.com/chainringlabs/ci/.github/workflows/docker-publish.yml@<commit>`
+- **Source repository**: the repository that called it, e.g. `chainringlabs/postgenerator`
+
+Checking the signer alone would accept any chainringlabs image as any other,
+because they all share the signer.
+
+Attestations (SBOM and build provenance), with the GitHub CLI:
+
+```sh
+gh attestation verify oci://ghcr.io/chainringlabs/<repo>:latest \
+  --repo chainringlabs/<repo> \
+  --signer-workflow chainringlabs/ci/.github/workflows/docker-publish.yml
+```
+
+`--repo` alone fails, because the signer is outside that repository. Checked
+on postgenerator's first shared publish (2026-11-21): the command above
+passes, and the same command naming a different `--repo` fails.
+
+The cosign signature:
+
+```sh
+cosign verify ghcr.io/chainringlabs/<repo>:latest \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/chainringlabs/ci/\.github/workflows/docker-publish\.yml@' \
+  --certificate-github-workflow-repository chainringlabs/<repo>
+```
+
+The cosign command follows from the certificate fields above but has not been
+run yet. The signer string includes the pinned commit, so match it with a
+pattern; it changes with every release of this repository. Images published
+before a repository switched to the shared workflow are signed by that
+repository's own workflow.
+
 ## Releasing
 
 Merge to `main`, then tag the merge commit `vX.Y.Z`. Callers pin the tag's
