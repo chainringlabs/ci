@@ -148,7 +148,7 @@ jobs:
         run: |
           repo_slug="${GITHUB_REPOSITORY##*/}"
           branch_name="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          npx -y @socketsecurity/cli@1.1.102 scan create \
+          npx -y @socketsecurity/cli@1.15.0 scan create \
             --org grecolabs \
             --repo "${repo_slug}" \
             --branch "${branch_name}" \
