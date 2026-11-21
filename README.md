@@ -11,6 +11,7 @@ workflow that lives in a private one.
 | Workflow | What it does | Permissions the calling job must grant |
 |---|---|---|
 | `ghcr-retention.yml` | Prunes the calling repository's GHCR package: keeps `latest` and the 5 most recent tagged versions, deletes untagged manifests. | `packages: write` |
+| `docker-publish.yml` | Builds the calling repository's image (`linux/amd64`). On pull requests it only builds. Otherwise it pushes to `ghcr.io/<owner>/<repo>` (`latest` on the default branch, semver on `v*` tags, `sha-<short sha>`), signs with cosign keyless, and attaches an SPDX SBOM and build provenance. | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `artifact-metadata: write` |
 
 ## Calling a workflow
 
