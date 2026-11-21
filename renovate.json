@@ -1,13 +1,32 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>chainringlabs/renovate-config"],
+  "extends": [
+    "github>chainringlabs/renovate-config"
+  ],
   "customManagers": [
     {
       "customType": "regex",
       "description": "Keep the pinned Socket CLI in the shared scan current.",
-      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
-      "matchStrings": ["npx -y (?<depName>@socketsecurity/cli)@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "npx -y (?<depName>@socketsecurity/cli)@(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
       "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Keep the pinned zizmor version in the lint workflow current.",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/lint\\.yml$/"
+      ],
+      "matchStrings": [
+        "zizmor-action@[^\\n]+\\n\\s+with:\\n\\s+version: (?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "zizmorcore/zizmor",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
     }
   ]
 }
