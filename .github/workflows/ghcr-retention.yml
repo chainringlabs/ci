@@ -1,0 +1,43 @@
+# Reusable: prune old versions of the calling repository's GHCR package.
+#
+# The calling job must grant `packages: write`. Nothing else is needed.
+name: GHCR retention
+
+on:
+  workflow_call:
+    inputs:
+      keep-n-tagged:
+        description: How many of the most recent tagged versions to keep for rollback.
+        type: number
+        default: 5
+      exclude-tags:
+        description: Tags that are never deleted (comma-separated).
+        type: string
+        default: latest
+
+permissions: {}
+
+jobs:
+  prune:
+    name: Prune old GHCR versions
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    concurrency:
+      group: ghcr-cleanup-${{ github.repository }}
+    steps:
+      # Tag-aware cleanup: keeps the most recent tagged versions, always keeps
+      # the excluded tags, and deletes untagged manifests. This action
+      # understands multi-arch images, cosign signatures and attestation
+      # referrers, so deleting a parent manifest does not orphan its children.
+      #
+      # Do NOT swap in actions/delete-package-versions with
+      # ignore-versions: '^latest$'. That regex matches the version *name*
+      # (the sha256 digest for container packages), never the tag, so it does
+      # not protect `latest` and will delete the manifest it points to.
+      - name: Prune GHCR
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          keep-n-tagged: ${{ inputs.keep-n-tagged }}
+          exclude-tags: ${{ inputs.exclude-tags }}
+          delete-untagged: true
