@@ -274,7 +274,7 @@ jobs:
       # --- Rust --------------------------------------------------------------
       # cargo audit is a second reader of Cargo.lock, on absolute runs only:
       # OSV diff mode already covers pull requests against the same advisories.
-      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         if: ${{ steps.detect.outputs.cargo_lock != '' && !inputs.cargo-deny && github.event_name != 'pull_request' }}
         with:
           tool: cargo-audit
