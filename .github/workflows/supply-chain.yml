@@ -13,10 +13,13 @@
 #
 # Socket runs on every event when its key is present. Ignore lists stay in the
 # calling repository (osv-scanner.toml beside each lockfile, .cargo/audit.toml,
-# deny.toml).
+# deny.toml). pip-audit also honours the osv-scanner.toml beside uv.lock.
 #
 # The calling job must grant `contents: read`. Pass the Socket key with
 # `secrets: inherit` or by name.
+#
+# Deliberately one file past the usual 300-line limit: callers reference it by
+# path, and splitting it would change every caller's interface.
 name: Supply chain scan
 
 on:
@@ -292,9 +295,49 @@ jobs:
           manifest-path: ${{ inputs.cargo-dir }}/Cargo.toml
           command: check ${{ github.event_name != 'pull_request' && 'advisories ' || '' }}licenses bans sources
 
+      # pip-audit does not read osv-scanner.toml, so the ignores in the one
+      # beside uv.lock (the file OSV reads) are passed to it too: one list per
+      # repository, honoured by both scanners. As in OSV, an entry whose
+      # ignoreUntil has passed no longer counts; a bare date is midnight UTC.
+      # The runner's python3 parses it: inputs.python-version may lack tomllib.
+      - name: Collect osv-scanner.toml ignores for pip-audit
+        id: ignores
+        if: ${{ steps.detect.outputs.uv_lock != '' && github.event_name != 'pull_request' }}
+        env:
+          UV_LOCK: ${{ steps.detect.outputs.uv_lock }}
+        run: |
+          python3 -I - <<'PY'
+          import datetime as dt, os, re, sys, tomllib
+
+          path = os.path.join(os.path.dirname(os.environ["UV_LOCK"]), "osv-scanner.toml")
+          utc, ids = dt.timezone.utc, []
+          if os.path.isfile(path):
+              with open(path, "rb") as f:
+                  entries = tomllib.load(f).get("IgnoredVulns", [])
+              for n, entry in enumerate(entries, 1):
+                  vid, until = str(entry.get("id", "")), entry.get("ignoreUntil")
+                  # IDs reach a whitespace-separated list and workflow commands.
+                  if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", vid):
+                      sys.exit(f"::error file={path}::IgnoredVulns entry {n} has no valid id")
+                  if isinstance(until, dt.datetime):
+                      until = until if until.tzinfo else until.replace(tzinfo=utc)
+                  elif isinstance(until, dt.date):
+                      until = dt.datetime.combine(until, dt.time(), utc)
+                  elif until is not None:
+                      sys.exit(f"::error file={path}::IgnoredVulns entry {n} has an invalid ignoreUntil")
+                  if until is not None and until <= dt.datetime.now(utc):
+                      print(f"::notice file={path}::{vid}: ignoreUntil has passed, so pip-audit reports it")
+                  else:
+                      ids.append(vid)
+          print("pip-audit ignores:", " ".join(ids) or "(none)")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"ids={' '.join(ids)}\n")
+          PY
+
       # pip-audit on absolute runs only, for the same reason as cargo audit.
       - name: pip-audit
         if: ${{ steps.detect.outputs.uv_lock != '' && github.event_name != 'pull_request' }}
         uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
         with:
           inputs: ${{ inputs.python-dir }}/requirements-lock.txt
+          ignore-vulns: ${{ steps.ignores.outputs.ids }}
