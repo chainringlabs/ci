@@ -28,11 +28,15 @@ jobs:
 
       # Security review of the workflows (injection, excess permissions,
       # unpinned actions, credential persistence).
+      #
+      # No `version:` input on purpose. The action then runs the hash-locked
+      # zizmor bundled with the pinned commit, so zizmor moves only when the
+      # action pin does and never asks for a version this action predates
+      # ("Unknown version ...; was it released after this action?").
       - name: zizmor
         # Runs even when actionlint failed, so one push shows both reports.
         if: ${{ !cancelled() }}
         uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
-          version: 1.32.0
           advanced-security: false
           annotations: true
