@@ -141,7 +141,7 @@ jobs:
         run: npm audit signatures
 
       # --- Python ------------------------------------------------------------
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         if: ${{ steps.detect.outputs.uv_lock != '' }}
         with:
           enable-cache: true
@@ -277,7 +277,7 @@ jobs:
       # --- Rust --------------------------------------------------------------
       # cargo audit is a second reader of Cargo.lock, on absolute runs only:
       # OSV diff mode already covers pull requests against the same advisories.
-      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+      - uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2.90.7
         if: ${{ steps.detect.outputs.cargo_lock != '' && !inputs.cargo-deny && github.event_name != 'pull_request' }}
         with:
           tool: cargo-audit
